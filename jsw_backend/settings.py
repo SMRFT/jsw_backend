@@ -25,9 +25,9 @@ SECRET_KEY = 'django-insecure-95ndzai&!%$1c-m1-by0sxhb+$oag5c+9zgga)-fd@_&r0$#em
 # SECURITY WARNING: don't run with debug turned on in production!
 DEBUG = True
 
-ALLOWED_HOSTS = []
+ALLOWED_HOSTS = ['13.201.93.35','jsw.shinovadatabase.in','jsw.shinova.in']
 
-
+SECURE_SSL_REDIRECT = False
 # Application definition
 
 INSTALLED_APPS = [
@@ -132,6 +132,8 @@ USE_L10N = True
 USE_TZ = True
 
 CORS_ORIGIN_ALLOW_ALL = True
+CORS_ALLOWED_ORIGINS = [
+    "http://localhost:3000","http://localhost:3001",'https://salemcosmeticclinic.netlify.app','https://shinovadatabase.in','https://api.shinovadatabase.in','jsw.shinovadatabase.in','jsw.shinova.in']
 # Static files (CSS, JavaScript, Images)
 # https://docs.djangoproject.com/en/3.2/howto/static-files/
 
