@@ -6,6 +6,14 @@ class ObjectIdField(serializers.Field):
         return str(value)
     def to_internal_value(self, data):
         return ObjectId(data)
+    
+
+from .models import ChildRegistration
+class ChildRegistrationSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = ChildRegistration
+        fields = '__all__'
+
 
 from .models import PediatricAssessment
 class PediatricAssessmentSerializer(serializers.ModelSerializer):
@@ -15,9 +23,7 @@ class PediatricAssessmentSerializer(serializers.ModelSerializer):
         fields = "__all__"
 
 
-from rest_framework import serializers
 from .models import Doctor
-
 class DoctorSerializer(serializers.ModelSerializer):
     class Meta:
         model = Doctor
@@ -35,24 +41,21 @@ class DoctorSerializer(serializers.ModelSerializer):
         return doctor
 
 
-
-from rest_framework import serializers
 from .models import HeightClick
-
-from rest_framework import serializers
-from .models import HeightClick,WeightClick,HeightandWeightClick
-
 class HeightClickSerializer(serializers.ModelSerializer):
     class Meta:
         model = HeightClick
         fields = ['patient_id', 'age', 'height','status']
 
+
+from .models import WeightClick
 class WeightClickSerializer(serializers.ModelSerializer):
     class Meta:
         model = WeightClick
         fields = ['patient_id', 'age', 'weight','status']
 
 
+from .models import HeightandWeightClick
 class HeightandWeightClickSerializer(serializers.ModelSerializer):
     class Meta:
         model = HeightandWeightClick

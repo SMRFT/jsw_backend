@@ -1,28 +1,181 @@
-from django.shortcuts import render
+from django.views.decorators.csrf import csrf_exempt
 from rest_framework import status
+from rest_framework.views import APIView
 from rest_framework.decorators import api_view
 from rest_framework.response import Response
-from django.views.decorators.http import require_http_methods
-# Create your views here.
+from rest_framework.parsers import MultiPartParser, FormParser
+from django.db.models import Max
+from pymongo import MongoClient
+from django.http import JsonResponse
+import json
+from django.http import HttpResponse, Http404
+from django.conf import settings
+from gridfs import GridFS
+from bson import ObjectId
+from .models import ChildRegistration
+from .Serializers import ChildRegistrationSerializer
+
+class ChildRegistrationView(APIView):
+    parser_classes = (MultiPartParser, FormParser)
+
+    def post(self, request, *args, **kwargs):
+        # MongoDB Configuration
+        client = MongoClient("mongodb://3.109.210.34:27017/")
+        db = client['jsw']
+        fs = GridFS(db)
+        data = request.data
+
+        # Save image to GridFS
+        image = data.get('image')
+        if image:
+            file_id = fs.put(image, filename=image.name)
+            data['image'] = str(file_id)  # Save the file ID as a string in the database
+
+        serializer = ChildRegistrationSerializer(data=data)
+        if serializer.is_valid():
+            serializer.save()
+            return Response({"message": "Patient registered successfully!"}, status=status.HTTP_200_OK)
+        else:
+            return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+        
+    def get(self, request, *args, **kwargs):
+        school_name = request.query_params.get('schoolName')
+        if not school_name:
+            return Response({"error": "School name is required"}, status=status.HTTP_400_BAD_REQUEST)
+        
+        children = ChildRegistration.objects.filter(schoolName=school_name)
+        serializer = ChildRegistrationSerializer(children, many=True)
+        return Response(serializer.data, status=status.HTTP_200_OK)
+    
+
+from rest_framework.views import APIView
+from rest_framework.response import Response
+from rest_framework import status
+from .models import ChildRegistration
+
+
+class ChildDataView(APIView): 
+    def get(self, request, *args, **kwargs):
+        # Fetch patient_id from query parameters
+        patient_id = request.query_params.get('patient_id')
+
+        if patient_id:
+            # Get specific child by patient_id
+            try:
+                child = ChildRegistration.objects.get(patient_id=patient_id)
+                serializer = ChildRegistrationSerializer(child)
+                return Response(serializer.data, status=status.HTTP_200_OK)
+            except ChildRegistration.DoesNotExist:
+                return Response({"message": "No data found for the given patient_id"}, status=status.HTTP_404_NOT_FOUND)
+        else:
+            # Fetch all data from ChildRegistration
+            children = ChildRegistration.objects.all()
+            serializer = ChildRegistrationSerializer(children, many=True)
+            return Response(serializer.data, status=status.HTTP_200_OK)
+
+
+    
+
+@api_view(['GET'])
+def get_vaccination_status(request, school_name, patient_id):
+    try:
+        assessment = PediatricAssessment.objects.filter(
+            schoolName=school_name, 
+            patient_id=patient_id
+        ).order_by('-assessmentDate').first()
+        
+        if assessment:
+            return Response({
+                'vaccinationStatus': assessment.vaccinationStatus.split(',') if assessment.vaccinationStatus else [],
+                'message': 'Vaccination status retrieved successfully.'
+            }, status=200)
+        else:
+            return Response({
+                'vaccinationStatus': [],
+                'message': 'No vaccination status found for this patient.'
+            }, status=404)
+    except Exception as e:
+        return Response({'error': str(e)}, status=500)
+        
+
 from .Serializers import PediatricAssessmentSerializer
 @api_view(['POST'])
 def pediatricAssessment(request):
     if request.method == 'POST':
-        serializer = PediatricAssessmentSerializer(data=request.data)
-        if serializer.is_valid():
-            serializer.save()
-            return Response({"message": "Data submitted successfully!"}, status=status.HTTP_201_CREATED)
-        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+        # Check if patient_id exists in the request data
+        patient_id = request.data.get('patient_id', None)
+        
+        if patient_id:
+            # Check if this patient already exists
+            existing_patient = PediatricAssessment.objects.filter(patient_id=patient_id).first()
+            if existing_patient:
+                # If the patient exists, don't generate a new ID and save the new data
+                serializer = PediatricAssessmentSerializer(existing_patient, data=request.data, partial=True)
+            else:
+                # If no patient exists with this ID, generate a new patient ID
+                serializer = PediatricAssessmentSerializer(data=request.data)
+            
+            if serializer.is_valid():
+                serializer.save()
+                return Response({"message": "Data submitted successfully!"}, status=status.HTTP_200_OK)
+            return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+        else:
+            return Response({"message": "Patient ID is required."}, status=status.HTTP_400_BAD_REQUEST)
     
+@api_view(['GET'])
+def getPediatricReport(request, patient_id):
+    try:
+        # Fetch all assessments for the given patient_id
+        assessments = PediatricAssessment.objects.filter(patient_id=patient_id)
+        
+        if not assessments.exists():
+            return Response({"message": "No records found for this patient ID."}, status=status.HTTP_404_NOT_FOUND)
 
+        # Initialize an empty dictionary to compile the data
+        compiled_data = {
+            "patient_id": patient_id,
+            "name": assessments[0].name,
+            "age": assessments[0].age,
+            "gender": assessments[0].gender,
+            "schoolName": assessments[0].schoolName,
+            "assessmentDates": [],
+            "complaints": [],
+            "pastAdmissions": [],
+            "knownCase": assessments[0].knownCase,
+            "midArmCircumference": [],
+            "selectedVisionAssessments": [],
+            "birthWeight": assessments[0].birthWeight,
+            "vaccinationStatus": [],
+            "deficiencies": [],
+            "headToToeExam": [],
+            "calorieProteinGaps": [],
+            "initialRecommendations": [],
+            "finalOutcome": [],
+        }
 
+        # Consolidate data
+        for assessment in assessments:
+            compiled_data["assessmentDates"].append(assessment.assessmentDate)
+            compiled_data["complaints"].extend(assessment.complaints.split(',') if assessment.complaints else [])
+            compiled_data["pastAdmissions"].extend(assessment.pastAdmissions.split(',') if assessment.pastAdmissions else [])
+            compiled_data["midArmCircumference"].append(assessment.midArmCircumference)
+            compiled_data["selectedVisionAssessments"].append(assessment.selectedVisionAssessment)
+            compiled_data["vaccinationStatus"].extend(assessment.vaccinationStatus)
+            compiled_data["deficiencies"].extend(assessment.deficiencies)
+            compiled_data["headToToeExam"].extend(assessment.headToToeExam)
+            compiled_data["calorieProteinGaps"].extend(assessment.calorieProteinGaps)
+            compiled_data["initialRecommendations"].extend(assessment.initialRecommendations)
+            compiled_data["finalOutcome"].extend(assessment.finalOutcome)
 
-from django.http import JsonResponse
-from django.views.decorators.csrf import csrf_exempt
-from pymongo import MongoClient
-from datetime import datetime
+        # Remove duplicates
+        for key in ["complaints", "pastAdmissions", "vaccinationStatus", "deficiencies", "headToToeExam", "calorieProteinGaps", "initialRecommendations", "finalOutcome"]:
+            compiled_data[key] = list(set(compiled_data[key]))
 
-# MongoDB connection
+        return Response(compiled_data, status=status.HTTP_200_OK)
+
+    except Exception as e:
+        return Response({"error": str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
 
 @csrf_exempt
@@ -44,28 +197,11 @@ def get_assessment_data(request):
             return JsonResponse({"error": str(e)}, status=500)
         
 
-
-
-from django.http import JsonResponse
-from django.views.decorators.csrf import csrf_exempt
-from rest_framework.decorators import api_view
-from rest_framework.response import Response
-from rest_framework import status
-
-
-from rest_framework.decorators import api_view
-from rest_framework.response import Response
-from django.db.models import Max
-
-from django.db.models import Max
-from rest_framework.decorators import api_view
-from rest_framework.response import Response
-from .models import PediatricAssessment
-
+from .models import ChildRegistration
 @api_view(['GET'])
 def generate_patient_id(request):
     # Fetch the highest patient ID explicitly
-    last_patient_id = PediatricAssessment.objects.aggregate(
+    last_patient_id = ChildRegistration.objects.aggregate(
         max_id=Max('patient_id')  # Use Max from django.db.models
     )['max_id']
     
@@ -76,51 +212,21 @@ def generate_patient_id(request):
 
     patient_id = f"SH{patient_number:03d}"  # Format the new ID
     return Response({"patient_id": patient_id})
-
-
-# @csrf_exempt
-# @api_view(['POST'])
-# def register(request):
-#     serializer = PediatricAssessmentSerializer(data=request.data)
-#     if serializer.is_valid():
-#         serializer.save()
-#         return Response(serializer.data, status=status.HTTP_201_CREATED)
-#     return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
-
-# def get_patient_details(request):
-#     patient_id = request.GET.get('patient_id')
-#     patientname = request.GET.get('patientname')
-
-#     if patient_id:
-#         patient = Patient.objects.filter(patient_id=patient_id).first()
-#     elif patientname:
-#         patient = Patient.objects.filter(patientname=patientname).first()
-#     else:
-#         return JsonResponse({'error': 'Please provide either patient_id or patientname'}, status=400)
-
-#     if patient:
-#         patient_data = {
-#             'patient_id': patient.patient_id,
-#             'patientname': patient.patientname,
-#             'age': patient.age,
-#             'gender': patient.gender,
-#             'address':patient.address
-
-#         }
-#         return JsonResponse(patient_data)
-#     else:
-#         return JsonResponse({'error': 'Patient not found'}, status=404)
     
 
-
+from .models import PediatricAssessment
 @api_view(['GET'])
 def get_patient_details(request):
     patient_id = request.query_params.get('patient_id', None)
     name = request.query_params.get('name', None)
     
     if patient_id:
-        # Fetch exact match for patient_id
-        patients = PediatricAssessment.objects.filter(patient_id=patient_id)
+        # Fetch the first match for patient_id (if multiple patients exist with the same ID)
+        patient = PediatricAssessment.objects.filter(patient_id=patient_id).first()
+        if patient:
+            patients = [patient]  # Wrap in a list to make it serializable
+        else:
+            patients = []
     elif name and len(name) >= 4:
         # Fetch partial matches for name with at least 4 letters
         patients = PediatricAssessment.objects.filter(name__icontains=name)
@@ -132,15 +238,8 @@ def get_patient_details(request):
     return Response(serializer.data)
 
 
-
-
-from rest_framework.views import APIView
-from rest_framework.response import Response
-from rest_framework import status
 from .models import Doctor
 from .Serializers import DoctorSerializer
-from django.contrib.auth import authenticate
-
 class RegisterDoctorView(APIView):
     def post(self, request):
         serializer = DoctorSerializer(data=request.data)
@@ -148,19 +247,6 @@ class RegisterDoctorView(APIView):
             serializer.save()
             return Response({"message": "Doctor registered successfully!"}, status=status.HTTP_201_CREATED)
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
-
-# class LoginDoctorView(APIView):
-#     def post(self, request):
-#         email = request.data.get('email')
-#         password = request.data.get('password')
-
-#         # Try to authenticate using email as username
-#         doctor = authenticate(request, username=email, password=password)
-
-#         if doctor:
-#             return Response({"message": "Login successful!"}, status=status.HTTP_200_OK)
-#         return Response({"error": "Invalid email or password"}, status=status.HTTP_401_UNAUTHORIZED)
-
 
 
 from django.contrib.auth.hashers import check_password
@@ -183,14 +269,28 @@ def LoginDoctorView(request):
         # If user with given email does not exist
         return JsonResponse({'error': 'User does not exist'}, status=status.HTTP_404_NOT_FOUND)
     
-from rest_framework.decorators import api_view
-from rest_framework.response import Response
-from .models import HeightClick,WeightClick,HeightandWeightClick
-from .Serializers import HeightClickSerializer,WeightClickSerializer,HeightandWeightClickSerializer
+def serve_image(request, image_id):
+    # MongoDB Configuration
+    client = MongoClient("mongodb://3.109.210.34:27017/")
+    db = client['jsw']
+    fs = GridFS(db)
+    try:
+        # Convert the image_id from string to ObjectId
+        file_id = ObjectId(image_id)
 
-from rest_framework.decorators import api_view
-from rest_framework.response import Response
+        # Fetch the file from GridFS
+        file = fs.get(file_id)
 
+        # Return the file as a response
+        response = HttpResponse(file.read(), content_type='image/jpeg')
+        response['Content-Disposition'] = f'inline; filename={file.filename}'
+        return response
+
+    except Exception as e:
+        # Return a 404 error if the image is not found
+        raise Http404(f"Image not found: {str(e)}")
+from .models import HeightClick
+from .Serializers import HeightClickSerializer
 @api_view(['POST'])
 def save_clicked_point(request):
     patient_id = request.data.get('patient_id')
@@ -208,6 +308,7 @@ def save_clicked_point(request):
     return Response(serializer.errors, status=400)
 
 
+from .Serializers import WeightClickSerializer
 @api_view(['POST'])
 def save_weightclicked_point(request):
     patient_id = request.data.get('patient_id')
@@ -224,6 +325,8 @@ def save_weightclicked_point(request):
         return Response({"message": "Data saved successfully"}, status=201)
     return Response(serializer.errors, status=400)
 
+
+from .Serializers import HeightandWeightClickSerializer
 @api_view(['POST'])
 def save_Heightandweight_point(request):
     patient_id = request.data.get('patient_id')
@@ -241,17 +344,12 @@ def save_Heightandweight_point(request):
     return Response(serializer.errors, status=400)
 
 
-
 @api_view(['GET'])
 def get_graph_data(request, patient_id):
     # Get all the data for the specified patient
     data = HeightClick.objects.filter(patient_id=patient_id)
     serializer = HeightClickSerializer(data, many=True)
     return Response(serializer.data)
-
-
-from django.http import JsonResponse
-import json
 
 
 @api_view(['DELETE'])
@@ -282,11 +380,7 @@ def delete_clicked_point(request):
         return JsonResponse({"error": str(e)}, status=500)
 
 
-from django.http import JsonResponse
-from rest_framework.decorators import api_view
-import json
 from .models import WeightClick  # Replace with the correct model name for weight clicks
-
 @api_view(['DELETE'])
 def delete_clicked_weight(request):
     try:
@@ -299,7 +393,7 @@ def delete_clicked_weight(request):
         if not patient_id or not age or not weight:
             return JsonResponse({"error": "Invalid data"}, status=400)
         # Filter and delete by patient_id, age, and weight
-        deleted_count, _ = HeightClick.objects.filter(
+        deleted_count, _ = WeightClick.objects.filter(
             patient_id=patient_id,
             age=str(age),
             weight=float(weight)
@@ -311,6 +405,7 @@ def delete_clicked_weight(request):
         
     except Exception as e:
         return JsonResponse({"error": str(e)}, status=500)
+
 
 @api_view(['GET'])
 def get_weightgraph_data(request, patient_id):
@@ -335,7 +430,8 @@ def tdscclicked_point(request):
         return Response({"message": "Data saved successfully"}, status=201)
     return Response(serializer.errors, status=400)
 
+
 @api_view(['GET'])
 def get_tdscclicked_point(request, patient_id):
-    data = TDSCClick.objects.filter(patient_id=patient_id).values("tdscpoint")
+    data = TDSCClick.objects.filter(patient_id=patient_id).values("tdscpoint",'tdscdescription')
     return Response(list(data))
